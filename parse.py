@@ -72,7 +72,7 @@ def parser_add_main_args(parser):
     parser.add_argument('--method', '-m', type=str, default='nodeformer')
     parser.add_argument('--dataset', type=str, default='cora')
     parser.add_argument('--sub_dataset', type=str, default='')
-    parser.add_argument('--data_dir', type=str, default='../data/')
+    parser.add_argument('--data_dir', type=str, default='./data/')
     parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--seed', type=int, default=42)
@@ -96,7 +96,7 @@ def parser_add_main_args(parser):
                         help='evaluation metric')
     parser.add_argument('--knn_num', type=int, default=5, help='number of k for KNN graph')
     parser.add_argument('--save_model', action='store_true', help='whether to save model')
-    parser.add_argument('--model_dir', type=str, default='../model/')
+    parser.add_argument('--model_dir', type=str, default='./model/')
 
     # hyper-parameter for model arch and training
     parser.add_argument('--hidden_channels', type=int, default=32)

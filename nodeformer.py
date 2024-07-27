@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
+import pandas as pd
 
 BIG_CONSTANT = 1e8
 
@@ -113,7 +114,7 @@ def denominator_gumbel(qs, ks):
     ks_sum = torch.einsum("nbhkm,n->bhkm", ks, all_ones) # ks_sum refers to O_k in the paper
     return torch.einsum("nbhm,bhkm->nbhk", qs, ks_sum)
 
-def kernelized_softmax(query, key, value, kernel_transformation, projection_matrix=None, edge_index=None, tau=0.25, return_weight=True):
+def kernelized_softmax(query, key, value, kernel_transformation, projection_matrix=None, edge_index=None, tau=0.25, return_weight=True, use_attn=True):
     '''
     fast computation of all-pair attentive aggregation with linear complexity
     input: query/key/value [B, N, H, D]
@@ -137,6 +138,38 @@ def kernelized_softmax(query, key, value, kernel_transformation, projection_matr
     z_den = z_den.permute(1, 0, 2)
     z_den = torch.unsqueeze(z_den, len(z_den.shape))
     z_output = z_num / z_den # [B, N, H, D]
+    if use_attn:
+        print(query_prime.size())
+        print(key_prime.size())
+        query_prime_transposed = query_prime.permute(1, 2, 0, 3)  # (B, H, N, M)
+        key_prime_transposed = key_prime.permute(1, 2, 3, 0)  # (B, H, M, N)
+        print(query_prime_transposed.size())
+        print(key_prime_transposed.size())
+        # 행렬 곱셈: (B, H, N, M) @ (B, H, M, N) -> (B, H, N, N)
+        attn_weight = torch.matmul(query_prime_transposed, key_prime_transposed)  # (B, H, N, N)
+        attn_normalizer = denominator(query_prime, key_prime) # [N, B, H]
+        attn_normalizer_reshaped = attn_normalizer.permute(1, 2, 0).unsqueeze(-1)
+        attn_weight = attn_weight / attn_normalizer_reshaped
+
+
+        # 필요한 차원으로 변환: (B, H, N, N) -> (B, N, N, H)
+        # attn_weight = attn_weight.permute(0, 2, 3, 1)  # (B, N, N, H)
+        for b in range(attn_weight.size()[0]):
+            for h in range(attn_weight.size()[1]):
+                matrix = attn_weight[b, h,:, :].cpu().detach().numpy()  # [N, N] 형태로 변환
+                df = pd.DataFrame(matrix)
+                # 파일명 지정 (예: tensor_b0_h0.csv, tensor_b0_h1.csv, ...)
+                filename = f'cora/attention_weight_{b}_head{h}_end.csv'
+                filepath = './model/'+filename
+                counter = 1
+                new_filepath = './model/'+f'cora/attention_weight_{b}_layer{counter}_head{h}_end.csv'
+                while os.path.exists(new_filepath):
+                    counter += 1
+                    new_filepath = './model/'+f'cora/attention_weight_{b}_layer{counter}_head{h}_end.csv'
+                    # new_filepath = './model/'+f'cora/attention_weight_{b}_layer{counter}_head{h}.csv'
+                        
+                df.to_csv(new_filepath, index=False, header=False)
+                print(f'Saved: {new_filepath}')
 
     if return_weight: # query edge prob for computing edge-level reg loss, this step requires O(E)
         start, end = edge_index
@@ -148,13 +181,15 @@ def kernelized_softmax(query, key, value, kernel_transformation, projection_matr
         edge_attn_dem = edge_attn_dem.permute(1, 0, 2) # [B, E, H]
         A_weight = edge_attn_num / edge_attn_dem # [B, E, H]
 
+        
+
         return z_output, A_weight
 
     else:
         return z_output
 
 def kernelized_gumbel_softmax(query, key, value, kernel_transformation, projection_matrix=None, edge_index=None,
-                                K=10, tau=0.25, return_weight=True):
+                                K=10, tau=0.25, return_weight=True, use_attn = False):
     '''
     fast computation of all-pair attentive aggregation with linear complexity
     input: query/key/value [B, N, H, D]
@@ -192,6 +227,38 @@ def kernelized_gumbel_softmax(query, key, value, kernel_transformation, projecti
         edge_attn_dem = attn_normalizer[end]  # [E, B, H]
         edge_attn_dem = edge_attn_dem.permute(1, 0, 2) # [B, E, H]
         A_weight = edge_attn_num / edge_attn_dem # [B, E, H]
+        # TODO: Attention weight 추출 구현(hard coding으로 완료), Prob: layer별 추출 불가능
+        if use_attn:
+            print(query_prime.size())
+            print(key_prime.size())
+            query_prime_transposed = query_prime.permute(1, 2, 0, 3)  # (B, H, N, M)
+            key_prime_transposed = key_prime.permute(1, 2, 3, 0)  # (B, H, M, N)
+            print(query_prime_transposed.size())
+            print(key_prime_transposed.size())
+            # 행렬 곱셈: (B, H, N, M) @ (B, H, M, N) -> (B, H, N, N)
+            attn_weight = torch.matmul(query_prime_transposed, key_prime_transposed)  # (B, H, N, N)
+            attn_normalizer = denominator(query_prime, key_prime) # [N, B, H]
+            attn_normalizer_reshaped = attn_normalizer.permute(1, 2, 0).unsqueeze(-1)
+            attn_weight = attn_weight / attn_normalizer_reshaped
+
+
+            # 필요한 차원으로 변환: (B, H, N, N) -> (B, N, N, H)
+            # attn_weight = attn_weight.permute(0, 2, 3, 1)  # (B, N, N, H)
+            for b in range(attn_weight.size()[0]):
+                for h in range(attn_weight.size()[1]):
+                    matrix = attn_weight[b, h,:, :].cpu().detach().numpy()  # [N, N] 형태로 변환
+                    df = pd.DataFrame(matrix)
+                    # 파일명 지정 (예: tensor_b0_h0.csv, tensor_b0_h1.csv, ...)
+                    filename = f'cora/attention_weight_{b}_head{h}_no_reg.csv'
+                    filepath = './model/'+filename
+                    counter = 1
+                    new_filepath = './model/'+f'cora/attention_weight_{b}_layer{counter}_head{h}_no_reg.csv'
+                    while os.path.exists(new_filepath):
+                        counter += 1
+                        new_filepath = './model/'+f'cora/attention_weight_{b}_layer{counter}_head{h}_no_reg.csv'
+                            
+                    df.to_csv(new_filepath, index=False, header=False)
+                    print(f'Saved: {new_filepath}')
 
         return z_output, A_weight
 
@@ -347,6 +414,7 @@ class NodeFormer(nn.Module):
         x = x.unsqueeze(0) # [B, N, H, D], B=1 denotes number of graph
         layer_ = []
         link_loss_ = []
+        # attn_weight_ = []
         z = self.fcs[0](x)
         if self.use_bn:
             z = self.bns[0](z)
@@ -358,8 +426,10 @@ class NodeFormer(nn.Module):
             if self.use_edge_loss:
                 z, link_loss = conv(z, adjs, tau)
                 link_loss_.append(link_loss)
+                # attn_weight_.append(attn_weight.cpu().detach().numpy().tolist())
             else:
                 z = conv(z, adjs, tau)
+                # attn_weight_.append(attn_weight.cpu().detach().numpy().tolist())
             if self.use_residual:
                 z += layer_[i]
             if self.use_bn:

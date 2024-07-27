@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.utils import to_undirected, remove_self_loops, add_self_loops
 from sklearn.neighbors import kneighbors_graph
+import networkx as nx
+
 
 from logger import Logger
 from dataset import load_dataset
@@ -19,6 +21,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 # NOTE: for consistent data splits, see data_utils.rand_train_test_idx
@@ -28,6 +32,72 @@ def fix_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
+
+def edge_index_to_adj_matrix(edge_index, num_nodes, device):
+    adj_matrix = torch.zeros((num_nodes, num_nodes), device=device)
+    for edge in edge_index:
+        adj_matrix[edge[0], edge[1]] = 1
+    for i in range(num_nodes):
+        adj_matrix[i, i] = 1
+    return adj_matrix
+
+
+def generate_connected_adjacency_matrix(n, device='cuda:0'):
+    # Create an empty adjacency matrix on the specified device (default is 'cuda')
+    adj_matrix = torch.zeros((n, n), dtype=torch.float32, device=device)
+    
+
+    # Ensure the graph is connected by creating a spanning tree
+    for i in range(1, n):
+        j = torch.randint(0, i, (1,), device=device).item()  # Randomly connect to any previous node
+        adj_matrix[i, j] = adj_matrix[j, i] = 1
+    for i in range(n):
+        adj_matrix[i, i] = 1
+
+    # Randomly add some more edges to make it more random while keeping it connected
+    num_edges = torch.randint(n, n*(n-1)//2, (1,), device=device).item()
+    while torch.sum(adj_matrix) < 2 * num_edges:  # each edge is counted twice in the adjacency matrix
+        i, j = torch.randint(0, n, (2,), device=device)
+        if i != j:
+            adj_matrix[i, j] = adj_matrix[j, i] = 1
+
+    return adj_matrix
+
+
+def calculate_attention_k(edge_index, attn_weight, num_nodes, max_k=9):
+    adj_matrix = edge_index_to_adj_matrix(edge_index, num_nodes, device)
+    # adj_matrix = torch.tensor(nx.adjacency_matrix(random_graph).todense(), device = device).float()
+    attn_weight = torch.tensor(attn_weight, device=device)
+    
+    k_hop_neighbors = torch.eye(num_nodes, device=device)
+    attn_sum = torch.zeros(max_k, device=device)
+    attn_k_list = []
+    max_degree_node = (adj_matrix > 0).sum(dim=1).max()
+    # print(max_degree_node)
+
+    for k in range(max_k):
+        k_hop_neighbor_count = (k_hop_neighbors > 0).sum(dim=1)
+        k_hop_neighbor_attn_avg = (k_hop_neighbors * attn_weight).sum(dim=1)/k_hop_neighbor_count
+
+
+        k_hop_neighbor_attn_sum = k_hop_neighbor_attn_avg.mean()
+        # k_hop_neighbor_attn_sum = k_hop_neighbor_attn_avg[max_degree_node]
+        
+        if k == 0:
+            attn_k = k_hop_neighbor_attn_sum
+        else:
+            attn_k = k_hop_neighbor_attn_sum - attn_sum[k-1]
+        
+        attn_sum[k] = k_hop_neighbor_attn_sum
+        attn_k_list.append(attn_k.item())
+        
+        k_hop_neighbors = torch.matmul(k_hop_neighbors, adj_matrix)
+        k_hop_neighbors =  (k_hop_neighbors > 0).float()
+    return attn_k_list
+
+def attn_sum():
+    return
+
 
 ### Parse args ###
 parser = argparse.ArgumentParser(description='General Training Pipeline')
@@ -40,7 +110,7 @@ fix_seed(args.seed)
 if args.cpu:
     device = torch.device("cpu")
 else:
-    device = torch.device("cuda:" + str(args.device) if torch.cuda.is_available() else torch.device("cpu"))
+    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
 
 # os.environ["CUDA_VISIBLE_DEVICES"]= "1" 
 # print(torch.__version__)
@@ -106,10 +176,6 @@ else:
     eval_func = eval_acc
 
 logger = Logger(args.runs, args)
-
-model.train()
-print('MODEL:', model)
-
 ### Adj storage for relational bias ###
 adjs = []
 adj, _ = remove_self_loops(dataset.graph['edge_index'])
@@ -119,91 +185,29 @@ for i in range(args.rb_order - 1): # edge_index of high order adjacency
     adj = adj_mul(adj, adj, n)
     adjs.append(adj)
 dataset.graph['adjs'] = adjs
+model_path = '/home/minho/NodeFormer/cora-nodeformer.pkl'
+model.eval()
+# out, link_loss_ = model(dataset.graph['node_feat'], dataset.graph['adjs'], args.tau)
+# random_adj = generate_connected_adjacency_matrix(n, device)
+random_graph = nx.erdos_renyi_graph(n, p=0.01)
+attn_mean = torch.zeros((args.num_layers * args.num_heads, n))
+for i in range(1, args.num_layers+1):
+    
+    for j in range(args.num_heads):
+        attn_path =  f'./model/cora/attention_weight_0_layer{i}_head{j}.csv'
+        df = pd.read_csv(attn_path ,header=None)
+        attn_weight = df.to_numpy()
+        # print(attn_weight_.shape)
+        # for attn_weight in attn_weight_:
+        # attn_k_list = calculate_attention_k(dataset.graph['adjs'], attn_weight,dataset.graph['node_feat'].size(0))
+        # print(f'L{i}_h{j}= {attn_k_list} ')
+        attn_tensor = torch.tensor(attn_weight, device = device).mean(dim=0)
+        attn_mean[i-1+j, :] = attn_tensor
 
-
-
-### Training loop ###
-for run in range(args.runs):
-    losses = []
-    CE_losses = []
-    Reg_losses = []
-    val_losses = []
-    # attn_weights = []
-    if args.dataset in ['cora', 'citeseer', 'pubmed'] and args.protocol == 'semi':
-        split_idx = split_idx_lst[0]
-    else:
-        split_idx = split_idx_lst[run]
-    train_idx = split_idx['train'].to(device)
-    model.reset_parameters()
-    optimizer = torch.optim.Adam(model.parameters(),weight_decay=args.weight_decay, lr=args.lr)
-    best_val = float('-inf')
-
-    for epoch in range(args.epochs):
-        model.train()
-        optimizer.zero_grad()
-
-        if args.method == 'nodeformer':
-            out, link_loss_ = model(dataset.graph['node_feat'], dataset.graph['adjs'], args.tau)
-        else:
-            out = model(dataset)
-
-        if args.dataset in ('yelp-chi', 'deezer-europe', 'twitch-e', 'fb100', 'ogbn-proteins'):
-            if dataset.label.shape[1] == 1:
-                true_label = F.one_hot(dataset.label, dataset.label.max() + 1).squeeze(1)
-            else:
-                true_label = dataset.label
-            CE_loss = criterion(out[train_idx], true_label.squeeze(1)[
-                train_idx].to(torch.float))
-            CE_losses.append(CE_loss.item())
-            loss = CE_loss
-        else:
-            out = F.log_softmax(out, dim=1)
-            CE_loss = criterion(
-                out[train_idx], dataset.label.squeeze(1)[train_idx])
-            CE_losses.append(CE_loss.item())
-            loss = CE_loss
-        if args.method == 'nodeformer':
-            Reg_loss = -(sum(link_loss_) / len(link_loss_))
-            loss += args.lamda * Reg_loss
-        loss.backward()
-        optimizer.step()
-        Reg_losses.append(Reg_loss.item())
-        losses.append(loss.item())
-
-        if epoch % args.eval_step == 0:
-            result = evaluate(model, dataset, split_idx, eval_func, criterion, args)
-            logger.add_result(run, result[:-1])
-            val_losses.append(result[3].item())
-
-            if result[1] > best_val:
-                best_val = result[1]
-                if args.save_model:
-                    torch.save(model.state_dict(), args.model_dir + f'{args.dataset}-{args.method}.pkl')
-        
-            # print(f'Epoch: {epoch:02d}, '
-            #       f'Loss: {loss:.4f}, '
-            #       f'Train: {100 * result[0]:.2f}%, '
-            #       f'Valid: {100 * result[1]:.2f}%, '
-            #       f'Test: {100 * result[2]:.2f}%')
-
-        
-
-    logger.print_statistics(run)
-    print(CE_losses)
-    print(Reg_losses)
-    print(losses)
-    print(val_losses)
-    # print(attn_weights)
-    if args.save_model:
-        torch.save(model.state_dict(), args.model_dir + f'{args.dataset}-{args.method}_end.pkl')
-
-results = logger.print_statistics()
-
-
-# ### Save results ###
-# filename = f'results/{args.dataset}.csv'
-# print(f"Saving results to {filename}")
-# with open(f"{filename}", 'a+') as write_obj:
-#     write_obj.write(f"{args.method}," +
-#                     f"{best_val.mean():.3f} ± {best_val.std():.3f}," +
-#                     f"{best_test.mean():.3f} ± {best_test.std():.3f}\n")
+print(attn_mean.size())
+print(attn_mean)
+norms = attn_mean.norm(p=2, dim=1, keepdim=True)
+normalized_attn_mean = attn_mean / norms
+transposed=torch.transpose(normalized_attn_mean, 0, 1)
+similarity = torch.matmul(normalized_attn_mean, transposed)
+print(similarity)
