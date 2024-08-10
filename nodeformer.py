@@ -114,7 +114,7 @@ def denominator_gumbel(qs, ks):
     ks_sum = torch.einsum("nbhkm,n->bhkm", ks, all_ones) # ks_sum refers to O_k in the paper
     return torch.einsum("nbhm,bhkm->nbhk", qs, ks_sum)
 
-def kernelized_softmax(query, key, value, kernel_transformation, projection_matrix=None, edge_index=None, tau=0.25, return_weight=True, use_attn=True):
+def kernelized_softmax(query, key, value, kernel_transformation, projection_matrix=None, edge_index=None, tau=0.25, return_weight=True, use_attn=False):
     '''
     fast computation of all-pair attentive aggregation with linear complexity
     input: query/key/value [B, N, H, D]

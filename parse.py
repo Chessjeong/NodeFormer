@@ -97,6 +97,8 @@ def parser_add_main_args(parser):
     parser.add_argument('--knn_num', type=int, default=5, help='number of k for KNN graph')
     parser.add_argument('--save_model', action='store_true', help='whether to save model')
     parser.add_argument('--model_dir', type=str, default='./model/')
+    parser.add_argument('--save_attn', type= bool, default= False)
+    parser.add_argument('--description', type=str, default='')
 
     # hyper-parameter for model arch and training
     parser.add_argument('--hidden_channels', type=int, default=32)

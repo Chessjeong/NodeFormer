@@ -195,7 +195,9 @@ for run in range(args.runs):
     print(val_losses)
     # print(attn_weights)
     if args.save_model:
-        torch.save(model.state_dict(), args.model_dir + f'{args.dataset}-{args.method}_end.pkl')
+        torch.save(model.state_dict(), args.model_dir + f'{args.dataset}-{args.method}_{args.description}.pkl')
+    if args.save_attn:
+
 
 results = logger.print_statistics()
 
